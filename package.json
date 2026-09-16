@@ -1,0 +1,23 @@
+{
+  "name": "cloudflare-autonomous-agent",
+  "version": "1.0.0",
+  "description": "A goal-following AI agent running on Cloudflare Workers and Workflows, controlled through Telegram.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "deploy:router": "cd agent-router && wrangler deploy",
+    "deploy:deployer": "cd agent-deployer && wrangler deploy",
+    "dev:router": "cd agent-router && wrangler dev",
+    "dev:deployer": "cd agent-deployer && wrangler dev",
+    "tail:router": "cd agent-router && wrangler tail",
+    "tail:deployer": "cd agent-deployer && wrangler tail",
+    "check": "node --check agent-router/src/worker.js && node --check agent-deployer/src/deployer-worker.js"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-deployer",
+  "main": "src/deployer-worker.js",
+  "compatibility_date": "2025-09-01",
+
+  "vars": {
+    // Used when agent-router sends a bare repo name. agent-router normally
+    // resolves the owner before calling, so this is a fallback; setting it
+    // is still recommended.
+    "GITHUB_DEFAULT_OWNER": "your-github-username"
+
+    // Optional. The worker assumes the Free-plan ceiling of 50 external
+    // subrequests per invocation. Raise this only if this worker runs on a
+    // Paid plan with a higher configured limit.
+    // "SUBREQUEST_LIMIT": "10000"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

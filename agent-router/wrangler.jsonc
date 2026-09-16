@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-router",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+
+  // Durable execution. Workflows are not subject to the ~30s wall-clock
+  // limit of a plain fetch handler, which a multi-step agent run needs.
+  "workflows": [
+    {
+      "name": "agent-workflow",
+      "binding": "AGENT_WORKFLOW",
+      "class_name": "AgentWorkflow"
+    }
+  ],
+
+  // Conversation history, per-key agent memory, tool-call stats and the
+  // written-file index. Create with:
+  //   wrangler kv namespace create AGENT_MEMORY
+  // then paste the returned id below.
+  "kv_namespaces": [
+    {
+      "binding": "AGENT_MEMORY",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // Optional. Enables vision review of screenshots in html_to_screenshot.
+  // Remove this block if you do not want Workers AI.
+  "ai": {
+    "binding": "AI"
+  },
+
+  "vars": {
+    // Owner used when a tool is given a bare repo name with no "owner/".
+    "GITHUB_DEFAULT_OWNER": "your-github-username",
+
+    // Internal storage repo for files the agent writes. Must already
+    // exist, or be creatable by GITHUB_TOKEN. Format: "owner/name".
+    "AGENT_FILES_REPO": "your-github-username/agent-files",
+
+    // Minutes of inactivity after which the next goal is treated as a new
+    // session and no prior history is injected. Default 30.
+    "MEMORY_SESSION_GAP_MINUTES": "20",
+
+    // How many past turns to replay into a prompt. Default 5.
+    "MEMORY_HISTORY_LIMIT": "5"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,0 +1,50 @@
+# Copy to .dev.vars for local development with `wrangler dev`.
+# In production set these with `wrangler secret put <NAME>` instead.
+# .dev.vars is gitignored. Never commit real values.
+
+# ---- Required ----
+TELEGRAM_BOT_TOKEN=
+# Comma-separated Telegram chat IDs allowed to use this agent.
+# The agent refuses every request if this is empty. Message your bot and
+# check the worker logs to find your chat ID.
+TELEGRAM_ALLOWED_CHAT_IDS=
+# Shared secret for the HTTP API (X-Agent-Secret header).
+# The HTTP API is disabled until this is set. Generate: openssl rand -hex 32
+AGENT_API_SECRET=
+# GitHub personal access token. Scope: repo. Add delete_repo ONLY if you
+# want the agent to be able to delete repositories.
+GITHUB_TOKEN=
+
+# ---- Required for the two-worker deploy path ----
+DEPLOYER_WORKER_URL=https://agent-deployer.<your-subdomain>.workers.dev
+# Must be byte-identical to the same secret on agent-deployer.
+DEPLOY_SHARED_SECRET=
+
+# ---- Model providers (at least one per chain) ----
+# Coding chain
+NVIDIA_API_KEY=
+NAGA_API_KEY=
+OPENROUTER_API_KEY=
+# General chain
+GOOGLE_AI_API_KEY=
+CEREBRAS_API_KEY=
+GROQ_API_KEY=
+
+# ---- Optional ----
+TELEGRAM_WEBHOOK_SECRET=
+TAVILY_API_KEY=
+JUDGE0_API_KEY=
+JUDGE0_API_HOST=
+SCREENSHOT_API_KEY=
+SHEET_WEBHOOK_URL=
+RESEND_API_KEY=
+RESEND_FROM=
+NOTIFY_EMAIL=
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REFRESH_TOKEN=
+DISCORD_BOT_TOKEN=
+YOUTUBE_API_KEY=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=

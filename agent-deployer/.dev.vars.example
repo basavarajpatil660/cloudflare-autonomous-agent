@@ -1,0 +1,8 @@
+# Copy to .dev.vars for local development. Use `wrangler secret put` in
+# production. Never commit real values.
+
+# Same GitHub token as agent-router.
+GITHUB_TOKEN=
+# Must be byte-identical to DEPLOY_SHARED_SECRET on agent-router.
+# Generate once: openssl rand -hex 32
+DEPLOY_SHARED_SECRET=
