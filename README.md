@@ -1,12 +1,13 @@
 <div align="center">
 
 <img src="assets/logo.png" width="120" height="120" alt="Cloudflare Autonomous Agent logo" />
+
 ### Cloudflare Autonomous Agent
 
 A goal-following AI agent that runs entirely on Cloudflare's free tier. You send it a task in Telegram, it plans and executes the steps on its own using a set of tools, and reports back when it is done.
 
-[![Workers](https://img.shields.io/badge/cloudflare-workers-f38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
-[![Workflows](https://img.shields.io/badge/cloudflare-workflows-f38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workflows/)
+[![Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-f38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Workflows](https://img.shields.io/badge/orchestration-Cloudflare%20Workflows-f38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workflows/)
 [![Telegram](https://img.shields.io/badge/telegram-bot-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots)
 [![Tools](https://img.shields.io/badge/tools-53-blue)](#tools)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
