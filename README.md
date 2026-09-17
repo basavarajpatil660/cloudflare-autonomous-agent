@@ -1,6 +1,19 @@
-# Cloudflare Autonomous Agent
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/cloudflare/logo-assets/main/cloudflare-icon.svg" width="60" height="60" alt="Cloudflare Autonomous Agent logo" />
+
+### Cloudflare Autonomous Agent
 
 A goal-following AI agent that runs entirely on Cloudflare's free tier. You send it a task in Telegram, it plans and executes the steps on its own using a set of tools, and reports back when it is done.
+
+[![Workers](https://img.shields.io/badge/cloudflare-workers-f38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Workflows](https://img.shields.io/badge/cloudflare-workflows-f38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workflows/)
+[![Telegram](https://img.shields.io/badge/telegram-bot-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots)
+[![Tools](https://img.shields.io/badge/tools-53-blue)](#tools)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![GitHub](https://img.shields.io/badge/github-basavarajpatil660-181717?logo=github&logoColor=white)](https://github.com/basavarajpatil660)
+
+</div>
 
 It is built from two Cloudflare Workers:
 
@@ -88,7 +101,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/basavarajpatil660/cloudflare-autonomous-agent.git
+git clone https://github.com/<your-username>/cloudflare-autonomous-agent.git
 cd cloudflare-autonomous-agent
 npm install
 ```
@@ -174,6 +187,17 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `GITHUB_DEFAULT_OWNER` | both | Owner used for bare repo names |
 | `AGENT_FILES_REPO` | router | Internal storage repo for written files |
 
+These four are set in `wrangler.jsonc` under `vars`, not as secrets — edit them before your first deploy:
+
+```jsonc
+"vars": {
+  "GITHUB_DEFAULT_OWNER": "your-github-username",
+  "AGENT_FILES_REPO": "your-github-username/agent-files",
+  "MEMORY_SESSION_GAP_MINUTES": "20",
+  "MEMORY_HISTORY_LIMIT": "5"
+}
+```
+
 ### Optional
 
 `TELEGRAM_WEBHOOK_SECRET`, `TAVILY_API_KEY` (web search), `JUDGE0_API_KEY` (code sandbox), `SCREENSHOT_API_KEY` (visual review), `RESEND_API_KEY` and `NOTIFY_EMAIL` (failure email), `SHEET_WEBHOOK_URL` (logging), plus credentials for the Spotify, Discord, YouTube, Gmail and Calendar tools. Any tool whose credentials are missing simply reports that it is unavailable.
@@ -222,6 +246,20 @@ The agent has 53 tools. Broadly:
 
 Actions with side effects outside GitHub pause for a Telegram confirmation button before running.
 
+## Techniques worth knowing about
+
+A few implementation details are more interesting than "it uses tools," and are easy to miss reading the source cold.
+
+**It refuses to lie about its own success.** Language models will confidently report finishing work they only described. Four separate checks exist purely to catch this — a deploy that never actually succeeded, a file with fewer rows than the goal asked for, an answer that only announces a plan with nothing written, code that still fails sandbox verification after its retry budget — and each one throws a visible error instead of letting a plausible-sounding false result through. This is enforced at the same points regardless of which model produced the answer.
+
+**The design-cliché check reads the files, not the model's description of them.** A model can accurately describe a page that still uses the exact template pattern the prompt told it to avoid. The scanner extracts the class name behind every `border-radius` + `box-shadow` rule from the written CSS, then counts how many real HTML elements use that class — counting occurrences in the CSS text finds nothing, since a correctly written shared stylesheet only ever defines the rule once.
+
+**Old conversation memory cannot leak into what the model treats as the current request.** Everything the model acts on is passed through a function that strips any injected memory block before goal-detection logic runs on it, and destructive tools separately require their target to be named in that stripped, current-turn text — never satisfied by something that only appears in replayed history. This exists because an earlier version misread stale memory as the active request and deleted a real repository as a result.
+
+**Large files are built incrementally, not generated in one shot.** A single tool call is bounded by the model's own output token limit, so a large CSV or dataset is written through repeated calls that each append to the same file rather than one call holding the whole thing. Chunk boundaries are checked so two appended sections can never land concatenated onto a single line.
+
+**Long answers are chunked without breaking mid-format.** Telegram's per-message length limit means a long final answer has to be split. Splitting prefers the nearest newline instead of a hard character cut, and if a split would land inside an open code fence, the fence is closed at the end of that chunk and reopened with the same language tag at the start of the next — so every delivered message is independently valid on its own.
+
 ## Limitations
 
 - A large multi-file build can exceed the free-plan subrequest budget. It fails with a clear message rather than silently.
@@ -236,4 +274,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE)."# cloudflare-autonomous-agent" 
+MIT. See [LICENSE](LICENSE).
