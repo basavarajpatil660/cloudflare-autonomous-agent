@@ -1,7 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/cloudflare/logo-assets/main/cloudflare-icon.svg" width="60" height="60" alt="Cloudflare Autonomous Agent logo" />
-
+<img src="assets/logo.png" width="120" height="120" alt="Cloudflare Autonomous Agent logo" />
 ### Cloudflare Autonomous Agent
 
 A goal-following AI agent that runs entirely on Cloudflare's free tier. You send it a task in Telegram, it plans and executes the steps on its own using a set of tools, and reports back when it is done.
