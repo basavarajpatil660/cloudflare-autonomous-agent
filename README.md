@@ -61,6 +61,30 @@ Telegram ──▶ agent-router (Cloudflare Workflow)
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the request flow, agent loop and verification passes in detail.
 
+### Provider fallback chains
+
+Each logical model call walks a chain until one provider responds; at most three are attempted per call, so one flaky provider can't consume the whole subrequest budget.
+
+```mermaid
+flowchart LR
+    subgraph Coding["Coding chain"]
+        direction LR
+        C1["NVIDIA NIM"] --> C2["NagaAI Super"] --> C3["NagaAI Ultra"] --> C4["OpenRouter"]
+    end
+
+    subgraph General["General chain"]
+        direction LR
+        G1["Google AI (Gemma)"] --> G2["Cerebras Llama 3.3 70B"] --> G3["Groq Llama 3.3 70B"] --> G4["OpenRouter"]
+    end
+
+    subgraph ClassifierReviewer["Classifier & reviewer"]
+        direction LR
+        R1["Cerebras"] --> R2["Groq"]
+    end
+```
+
+Chains are defined at the top of `agent-router/src/worker.js` and are straightforward to edit.
+
 ## Subrequest budget
 
 This is the main constraint the project is designed around, and the reason for the two-worker split.
@@ -91,14 +115,28 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Requirements
 
 - A Cloudflare account (the free plan is sufficient)
-- Node.js 18 or newer, and [Wrangler](https://developers.cloudflare.com/workers/wrangler/)
+- Node.js 18 or newer, and [Wrangler](https://developers.cloudflare.com/workers/wrangler/) — only needed for the manual deploy path below; the GitHub-connected path needs neither
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - A GitHub personal access token
 - At least one model provider API key per chain (see [Model providers](#model-providers))
 
 ## Setup
 
-### 1. Clone and install
+There are two ways to deploy each worker: connect the repo to Cloudflare Builds so every push auto-deploys (no local CLI, no `wrangler deploy`), or deploy manually from your machine. Pick one per worker — you don't need both.
+
+### Option A — GitHub-connected (Cloudflare Builds, no local CLI)
+
+This is the setup actually used in production for this project: each worker lives in (or is connected to) its own GitHub repo, wired to a Cloudflare Worker via **Cloudflare Builds**, so a `git push` alone triggers the build and deploy — there is no local `wrangler deploy` step and no project pulled to your machine.
+
+1. In the Cloudflare dashboard, create a Worker for `agent-deployer` and one for `agent-router`, and connect each to its corresponding GitHub repo/path under **Settings → Builds**.
+2. Set the required secrets and vars for each worker directly in the dashboard (**Settings → Variables and Secrets**) — see the [Configuration](#configuration) tables below for exactly which ones each worker needs.
+3. Push to the connected branch. Cloudflare Builds runs the build and deploy automatically; check the **Deployments** tab on each Worker for the URL and build logs.
+
+Deploy `agent-deployer` first and note its URL — `agent-router` needs it as `DEPLOYER_WORKER_URL`.
+
+### Option B — Manual (local Wrangler CLI)
+
+#### 1. Clone and install
 
 ```bash
 git clone https://github.com/<your-username>/cloudflare-autonomous-agent.git
@@ -106,7 +144,7 @@ cd cloudflare-autonomous-agent
 npm install
 ```
 
-### 2. Deploy `agent-deployer` first
+#### 2. Deploy `agent-deployer` first
 
 `agent-router` needs its URL.
 
@@ -123,7 +161,7 @@ wrangler deploy
 
 Note the deployed URL, for example `https://agent-deployer.<your-subdomain>.workers.dev`.
 
-### 3. Create the KV namespace
+#### 3. Create the KV namespace
 
 ```bash
 cd ../agent-router
@@ -132,7 +170,7 @@ wrangler kv namespace create AGENT_MEMORY
 
 Paste the returned `id` into `agent-router/wrangler.jsonc`.
 
-### 4. Configure and deploy `agent-router`
+#### 4. Configure and deploy `agent-router`
 
 Edit `wrangler.jsonc` and set `GITHUB_DEFAULT_OWNER` and `AGENT_FILES_REPO`, then set the secrets:
 
@@ -151,9 +189,9 @@ wrangler secret put GOOGLE_AI_API_KEY
 wrangler deploy
 ```
 
-To find your Telegram chat ID, message the bot once and read the worker logs with `wrangler tail` — the rejected chat ID is logged.
-
 ### 5. Register the Telegram webhook
+
+(Needed either way, once both workers are deployed.)
 
 ```bash
 curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
@@ -187,7 +225,7 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `GITHUB_DEFAULT_OWNER` | both | Owner used for bare repo names |
 | `AGENT_FILES_REPO` | router | Internal storage repo for written files |
 
-These four are set in `wrangler.jsonc` under `vars`, not as secrets — edit them before your first deploy:
+These four are set in `wrangler.jsonc` under `vars` (manual path) or as plain variables in the dashboard (GitHub-connected path) — not as secrets:
 
 ```jsonc
 "vars": {
@@ -206,7 +244,7 @@ If you use `SHEET_WEBHOOK_URL`, note that tool-call logs are sent **batched** as
 
 ## Model providers
 
-The agent uses fallback chains rather than a single provider, so a rate-limited or failing provider does not end the run. Chains are defined at the top of `agent-router/src/worker.js` and are straightforward to edit.
+The agent uses fallback chains rather than a single provider, so a rate-limited or failing provider does not end the run (see the [diagram above](#provider-fallback-chains)).
 
 - **Coding chain** — NVIDIA NIM, NagaAI, OpenRouter
 - **General chain** — Google AI (Gemma), Cerebras, Groq, OpenRouter
