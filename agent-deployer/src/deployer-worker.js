@@ -61,7 +61,7 @@
 //   GITHUB_TOKEN          — same token as agent-router
 //   DEPLOY_SHARED_SECRET  — random string, identical on both workers
 //                           (sent by agent-router as X-Deploy-Secret)
-// OPTIONAL:
+// OPTIONAL VARIABLES (plain `vars` in wrangler.jsonc, not secrets):
 //   GITHUB_DEFAULT_OWNER  — used when a repo arrives without "owner/"
 //   SUBREQUEST_LIMIT      — override the assumed 50 (set to 10000 if you
 //                           ever move this worker to a Paid plan)
@@ -275,7 +275,7 @@ async function handleDeploy(request, env) {
   // containing only the auto_init README. Reject it loudly up front
   // instead of walking into a guaranteed-to-fail write loop.
   if (!repo.includes("/") || repo.startsWith("/") || repo.endsWith("/")) {
-    return json({ error: `Resolved repo "${repo}" is not a valid "owner/name" — the caller sent a bare repo name and GITHUB_DEFAULT_OWNER is not configured on this worker. Set GITHUB_DEFAULT_OWNER as a secret on this Deployer worker, or always pass a fully-qualified "owner/repo" string.` }, 400);
+    return json({ error: `Resolved repo "${repo}" is not a valid "owner/name" — the caller sent a bare repo name and GITHUB_DEFAULT_OWNER is not configured on this worker. Set GITHUB_DEFAULT_OWNER as a variable in this worker's wrangler.jsonc, or always pass a fully-qualified "owner/repo" string.` }, 400);
   }
 
   const budget = createBudget(env);
