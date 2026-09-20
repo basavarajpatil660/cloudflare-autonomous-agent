@@ -12,6 +12,7 @@ A goal-following AI agent that runs entirely on Cloudflare's free tier. You send
 [![Tools](https://img.shields.io/badge/tools-53-blue)](#what-it-can-do)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![GitHub](https://img.shields.io/badge/github-basavarajpatil660-181717?logo=github&logoColor=white)](https://github.com/basavarajpatil660)
+[![Stars](https://img.shields.io/github/stars/basavarajpatil660/cloudflare-autonomous-agent?style=social)](https://github.com/basavarajpatil660/cloudflare-autonomous-agent)
 
 </div>
 
@@ -216,7 +217,7 @@ There are two ways to deploy each worker. Pick one per worker, you don't need bo
 
 This is how the project runs in production. Each worker lives in its own GitHub repo, wired to a Cloudflare Worker through **Cloudflare Builds**. A `git push` alone triggers the build and deploy. No local `wrangler deploy`, no project pulled to your machine.
 
-1. Put each worker in a GitHub repo (or a folder inside one): `agent-router` and `agent-deployer`. If both share a repo, set each Worker's **Root directory** under **Settings → Builds** to its own folder.
+1. [Fork the repo](https://github.com/basavarajpatil660/cloudflare-autonomous-agent/fork) so the code lives in your own GitHub account. It holds both workers in their own folders, `agent-router` and `agent-deployer`. Because they share one repo, set each Worker's **Root directory** under **Settings → Builds** to its own folder. (Prefer one repo per worker? Copy each folder into its own repo and skip the Root directory step.)
 2. In the Cloudflare dashboard, create a Worker for each and connect it to its repo under **Settings → Builds**. Cloudflare will ask you to authorise its GitHub app the first time. Keep the Worker names identical to the `name` in each `wrangler.jsonc` (`agent-router` and `agent-deployer`).
 3. Set the secrets and vars for each worker in the dashboard (**Settings → Variables and Secrets**). [Setting up keys](#setting-up-keys) walks through every one.
 4. Push to the connected branch. Watch the **Deployments** tab on each Worker for the URL and build logs.
@@ -258,7 +259,7 @@ Create the KV namespace once (`wrangler kv namespace create AGENT_MEMORY`, or in
 #### 1. Clone and install
 
 ```bash
-git clone https://github.com/<your-username>/cloudflare-autonomous-agent.git
+git clone https://github.com/basavarajpatil660/cloudflare-autonomous-agent.git
 cd cloudflare-autonomous-agent
 npm install
 ```
@@ -852,7 +853,7 @@ A few implementation details are more interesting than "it uses tools," and are 
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Found a bug or have an idea? [Open an issue](https://github.com/basavarajpatil660/cloudflare-autonomous-agent/issues).
 
 ## License
 
