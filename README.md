@@ -18,7 +18,7 @@ A goal-following AI agent that runs entirely on Cloudflare's free tier. You send
 It is built from two Cloudflare Workers:
 
 - **`agent-router`** — the agent itself. Classifies the goal, runs the tool loop, calls model providers, verifies its own output, and talks to Telegram.
-- **`agent-deployer`** — a small, single-purpose worker that pushes a finished multi-file project to a GitHub repository in one batched request.
+- **`agent-deployer`** — a small, single-purpose worker that pushes a finished multi-file project to a GitHub repository. The router calls it as a single request.
 
 The split exists for a specific reason, covered under [Subrequest budget](#subrequest-budget).
 
@@ -94,7 +94,7 @@ A few decisions are worth explaining, because they are the result of specific fa
 
 **Destructive actions are gated twice.** `github_delete_repo` and `github_delete_file` require the target to be named in the current message, along with actual deletion wording, never just in replayed memory. They also pause for a Telegram confirmation button. This exists because an early version deleted a repository that only appeared in prior conversation context.
 
-**Memory is time-scoped.** Old goals are not replayed into unrelated new ones. After a configurable idle gap (30 minutes by default) the next message is treated as a fresh session, and short casual messages skip memory injection entirely.
+**Memory is time-scoped.** Old goals are not replayed into unrelated new ones. After a configurable idle gap (`MEMORY_SESSION_GAP_MINUTES`, set to 20 in the shipped config) the next message is treated as a fresh session, and short casual messages skip memory injection entirely.
 
 **Repeat calls don't repeat side effects.** Tools that change something (writes, deploys, issues, Spotify, Discord) are remembered per run. If the model asks for the exact same call twice, the second one is skipped and returns the first result.
 
@@ -155,7 +155,26 @@ The project handles this in three ways:
 - **Batching.** Tool-call logging is buffered and flushed as a single request rather than one per call. Model tool definitions are filtered by goal relevance, so unused integrations are not serialised into every request.
 - **A separate budget for deploys.** Pushing a project to GitHub is the most subrequest-heavy step, so it runs in `agent-deployer` with its own fresh 50, invoked from `agent-router` as a single subrequest.
 
-Be aware of the ceiling this leaves. A large multi-file build genuinely may not fit in 50 external subrequests. When that happens the run fails with a message naming the real limit rather than an opaque "Too many subrequests" error. Raising the limit requires a paid plan and the `limits.subrequests` setting in `wrangler.jsonc`.
+Be aware of the ceiling this leaves. A large multi-file build genuinely may not fit in 50 external subrequests. When that happens the run fails with a message naming the real limit rather than an opaque "Too many subrequests" error.
+
+Raising the limit takes two steps on a paid plan: raise the platform limit (`limits.subrequests` in `wrangler.jsonc`), then tell the workers, because each keeps its own count. On `agent-deployer` set the `SUBREQUEST_LIMIT` variable. On `agent-router` change the `SUBREQUEST_LIMIT` constant at the top of `src/worker.js`.
+
+<details>
+<summary><b>How the deployer spends its 50</b></summary>
+
+| Step | Cost |
+|---|---|
+| Check the repo exists | 1 |
+| Create it (new repos only) | 1 |
+| Each file in a new repo | 1 (a single write) |
+| Each file in an existing repo | 2 (look up the file's version, then write) |
+| README | 2 (it always looks up the existing one first) |
+| Retry after a transient GitHub error | +2, and only if the budget allows |
+| Held back to report the result | 4 |
+
+Before each file, the deployer checks what's left. A 20-file update to an existing repo with a README costs about 43 of the 46 usable, so a retry or two can push the last files onto the skipped list. That's by design: the second call finishes the job. It also waits about a second after creating a repo, because GitHub needs a moment before it accepts writes.
+
+</details>
 
 ## Security
 
@@ -164,6 +183,7 @@ Read this before deploying. The agent operates with a GitHub token and can creat
 - **Both entry points fail closed.** Telegram requests are rejected unless the sender's chat ID is listed in `TELEGRAM_ALLOWED_CHAT_IDS`. The HTTP API is disabled entirely until `AGENT_API_SECRET` is set. Neither defaults to open. Confirm buttons are also only accepted from allowlisted chats.
 - **Scope the GitHub token to what you need.** The agent creates repos (its own storage repo, deploy targets), so a token limited to a fixed list of existing repos will fail on creation. Either create those repos yourself and use a fine-grained token limited to them, or use a token that can create repos. Only add `delete_repo` if you actually want the agent able to delete repositories.
 - **Use `BLOCKED_REPOS`.** The set at the top of `agent-router/src/worker.js` names repositories the agent must never write to or delete, regardless of instruction. Populate it with anything you cannot afford to lose.
+- **Treat `DEPLOY_SHARED_SECRET` like the GitHub token.** The deployer refuses every request until it's set and compares it in constant time, but it doesn't check `BLOCKED_REPOS`. That list is enforced in the router. Anyone holding the secret can point the deployer at any repo your token can reach.
 - **Set `TELEGRAM_WEBHOOK_SECRET`.** Telegram will then sign each webhook delivery, and the worker rejects anything that did not come from Telegram.
 - **Know what runs without asking.** Merging a PR, closing an issue and adding a collaborator do not use a confirm button (see the [table above](#which-actions-ask-before-running)). If that makes you uncomfortable, scope the token down.
 
@@ -196,32 +216,42 @@ There are two ways to deploy each worker. Pick one per worker, you don't need bo
 
 This is how the project runs in production. Each worker lives in its own GitHub repo, wired to a Cloudflare Worker through **Cloudflare Builds**. A `git push` alone triggers the build and deploy. No local `wrangler deploy`, no project pulled to your machine.
 
-1. Put each worker in a GitHub repo (or a path inside one): `agent-deployer` and `agent-router`.
-2. In the Cloudflare dashboard, create a Worker for each and connect it to its repo under **Settings → Builds**. Cloudflare will ask you to authorise its GitHub app the first time.
+1. Put each worker in a GitHub repo (or a folder inside one): `agent-router` and `agent-deployer`. If both share a repo, set each Worker's **Root directory** under **Settings → Builds** to its own folder.
+2. In the Cloudflare dashboard, create a Worker for each and connect it to its repo under **Settings → Builds**. Cloudflare will ask you to authorise its GitHub app the first time. Keep the Worker names identical to the `name` in each `wrangler.jsonc` (`agent-router` and `agent-deployer`).
 3. Set the secrets and vars for each worker in the dashboard (**Settings → Variables and Secrets**). [Setting up keys](#setting-up-keys) walks through every one.
 4. Push to the connected branch. Watch the **Deployments** tab on each Worker for the URL and build logs.
 
-Deploy `agent-deployer` first and note its URL. `agent-router` needs it as `DEPLOYER_WORKER_URL`.
+Deploy `agent-deployer` first and note its URL. `agent-router` needs it as `DEPLOYER_WORKER_URL`. Open that URL in a browser to check it's alive. You should see:
+
+```json
+{ "status": "ok", "worker": "agent-deployer", "version": "1.4", "usage": "POST /deploy with X-Deploy-Secret header" }
+```
 
 From then on, every change is edit, commit, push.
 
-### What the router expects from `wrangler.jsonc`
+### Edit three things in `wrangler.jsonc`
 
-Builds deploys whatever is in your config, so these bindings have to be in the committed file:
+Builds deploys whatever is in the committed config, so the router's bindings live there. `agent-router/wrangler.jsonc` already declares them:
+
+| Binding | What it is |
+|---|---|
+| `AGENT_WORKFLOW` | The durable Workflow (class `AgentWorkflow`) that runs each goal |
+| `AGENT_MEMORY` | KV namespace for history, notes, stats and the file index |
+| `AI` | Workers AI, only used for the screenshot vision review. Delete the block if you don't want it |
+
+Before the first deploy, change three placeholders:
 
 ```jsonc
-{
-  "workflows": [
-    { "name": "agent-workflow", "binding": "AGENT_WORKFLOW", "class_name": "AgentWorkflow" }
-  ],
-  "kv_namespaces": [
-    { "binding": "AGENT_MEMORY", "id": "<your-kv-namespace-id>" }
-  ],
-  "ai": { "binding": "AI" }   // optional, only for the screenshot vision review
+"kv_namespaces": [{ "binding": "AGENT_MEMORY", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }],
+"vars": {
+  "GITHUB_DEFAULT_OWNER": "your-github-username",
+  "AGENT_FILES_REPO": "your-github-username/agent-files"
 }
 ```
 
-Create the KV namespace once (`wrangler kv namespace create AGENT_MEMORY`, or in the dashboard under **Storage & Databases → KV**) and paste its id in.
+Create the KV namespace once (`wrangler kv namespace create AGENT_MEMORY`, or in the dashboard under **Storage & Databases → KV**) and paste its id in. Commit, and the next build picks it up.
+
+`agent-deployer/wrangler.jsonc` has no bindings at all. It needs one variable, `GITHUB_DEFAULT_OWNER`, plus the two secrets `GITHUB_TOKEN` and `DEPLOY_SHARED_SECRET` (the same value as on the router).
 
 ### Option B: Manual (local Wrangler CLI)
 
@@ -299,7 +329,7 @@ Send your bot: `write a short notes.txt explaining what a REST API is and send m
 
 ## Setting up keys
 
-Every key below is optional except the ones under [Required](#required). Add only what you want to use.
+Every key below is optional except the ones under [Required](#required). Add only what you want to use. `agent-router/.dev.vars.example` lists every variable in one place, handy as a checklist.
 
 **Where a key goes.** Anything secret (tokens, API keys) is stored as a **Secret**. Plain settings like `GITHUB_DEFAULT_OWNER` are ordinary variables.
 
@@ -315,7 +345,9 @@ Keep plain variables in `wrangler.jsonc`. When a worker deploys from config, val
 
 1. Open [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts, copy the token. That is `TELEGRAM_BOT_TOKEN`.
 2. Send any message to your new bot.
-3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and find `"chat":{"id": ...}`. That number is your chat ID.
+3. Find your chat ID. Two ways:
+   - **Before you register the webhook:** open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and look for `"chat":{"id": ...}`. Telegram stops serving `getUpdates` once a webhook is set, so use this one early.
+   - **After deploying:** the bot replies "This agent is private" and the worker logs `[telegram] rejected goal from non-allowlisted chat <id>`. Read the ID from the Worker's logs in the dashboard.
 4. Set `TELEGRAM_ALLOWED_CHAT_IDS` to it. For more than one person, separate IDs with commas.
 
 </details>
@@ -529,7 +561,9 @@ how many repos do I have?
 
 **Tip:** to save tokens, the agent is only handed the GitHub tools your message hints at. The core ones (create, list, write, delete, read tree, look up) are always there. Issue, PR, branch, commit, release, collaborator, search and repo-settings tools show up when your message contains words like *issue*, *pull request*, *branch*, *commit*, *release*, *collaborator*, or *search github*. So say what you mean in plain words.
 
-**Deploying a whole project.** Ask for a build and say *push* or *deploy* plus *repo*. The agent writes each file, then calls `agent-deployer` once with the list of paths. It refuses to finish until a push has actually succeeded. One call takes up to 20 files. For more, it splits the deploy across calls, and if the deployer runs out of its own budget it reports exactly which files were skipped.
+**Deploying a whole project.** Ask for a build and say *push* or *deploy* plus *repo*. The agent writes each file, then calls `agent-deployer` once with the list of paths, and it refuses to finish until a push has actually succeeded.
+
+The deployer creates the repo if needed (private), then writes the files one by one. Each file is its own commit (`Deploy index.html via agent-deployer`), and a README, if there is one, goes last. One call takes up to 20 files. For more, the agent splits the deploy across calls. The deployer counts every GitHub call it makes and stops on purpose while it still has budget left to report, naming every file that didn't land, whether it ran out of budget or the write failed. The agent then re-sends just those.
 
 **Deleting.** Repo and file deletes need the exact name in your message, real deletion wording (*delete*, *remove*, *erase*...), and your tap on the Confirm button. `BLOCKED_REPOS` blocks writes and deletes on repos you list, no matter what.
 
@@ -654,7 +688,7 @@ what's on my calendar this week?
 Two kinds, both stored in the `AGENT_MEMORY` KV namespace.
 
 - **Notes you ask for.** `remember my main repo is corner-bakery` saves a key and value that persist across runs. Ask for it later with `what's my main repo?`.
-- **Run history.** The last 5 goals and results for your chat are quietly passed into the next run so it has context. After 30 minutes of quiet, the next message starts fresh, and short casual messages skip it entirely.
+- **Run history.** The last 5 goals and results for your chat are quietly passed into the next run so it has context. After the idle gap (20 minutes in the shipped config, 30 if the variable is unset), the next message starts fresh, and short casual messages skip it entirely.
 
 The agent also keeps an index of the last 50 files it wrote for your chat, which is what `list my files` reads from.
 
@@ -673,7 +707,7 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `DEPLOY_SHARED_SECRET` | both | Must be identical on both workers |
 | `DEPLOYER_WORKER_URL` | router | Deployed URL of `agent-deployer` |
 | `GITHUB_DEFAULT_OWNER` | both | Owner used for bare repo names |
-| `AGENT_FILES_REPO` | router | Storage repo for written files, as `owner/name`. Created automatically on first use |
+| `AGENT_FILES_REPO` | router | Storage repo for written files, as `owner/name`. Created on first use if the token is allowed to create repos |
 
 `GITHUB_DEFAULT_OWNER`, `AGENT_FILES_REPO` and the memory settings are plain variables, not secrets:
 
@@ -681,7 +715,7 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 "vars": {
   "GITHUB_DEFAULT_OWNER": "your-github-username",
   "AGENT_FILES_REPO": "your-github-username/agent-files",
-  "MEMORY_SESSION_GAP_MINUTES": "30",
+  "MEMORY_SESSION_GAP_MINUTES": "20",
   "MEMORY_HISTORY_LIMIT": "5"
 }
 ```
@@ -700,7 +734,16 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` | Gmail and Calendar |
 | `RESEND_API_KEY`, `NOTIFY_EMAIL`, `RESEND_FROM` | Failure emails |
 | `SHEET_WEBHOOK_URL` | Logging to a Google Sheet |
-| `MEMORY_SESSION_GAP_MINUTES`, `MEMORY_HISTORY_LIMIT` | Memory tuning (defaults 30 and 5) |
+| `MEMORY_SESSION_GAP_MINUTES`, `MEMORY_HISTORY_LIMIT` | Memory tuning (code defaults 30 and 5, the shipped config sets 20 and 5) |
+
+### agent-deployer variables
+
+| Name | Type | Purpose |
+|---|---|---|
+| `GITHUB_TOKEN` | secret | Same token as the router |
+| `DEPLOY_SHARED_SECRET` | secret | Must match the router's value. The deployer refuses all requests without it |
+| `GITHUB_DEFAULT_OWNER` | variable | Fallback owner for bare repo names. The router normally resolves the owner first, but set it anyway |
+| `SUBREQUEST_LIMIT` | variable, optional | Defaults to 50. Raise only on a paid plan |
 
 ### Run limits
 
@@ -709,8 +752,9 @@ Full variable reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | Tool-loop iterations per pass | 30 (8 per revision pass) |
 | Tool calls per run | 35 |
 | Wall-clock time per run | 15 minutes |
-| External subrequests (free plan) | 50, with 8 held back |
+| External subrequests (free plan) | 50 per worker, with 8 held back in the router and 4 in the deployer |
 | Files per deploy call | 20 |
+| Size of one deployed file | 300,000 characters (the router's 200,000 cap on saved files applies first) |
 | Size of one saved file | 200,000 characters |
 | Confirm button window | 5 minutes |
 | Code fix attempts | 2 |
@@ -751,6 +795,32 @@ curl -X POST https://agent-router.<your-subdomain>.workers.dev/agent \
 
 The `/prompt` shortcut runs outside a Workflow and has no Telegram chat, so anything that needs a confirm button or sends to Telegram won't work there. Use `POST /agent` for those.
 
+### agent-deployer API
+
+Normally only `agent-router` calls this, but you can test it by hand. `POST /deploy` needs the `X-Deploy-Secret` header. The health check at `GET /` doesn't.
+
+```bash
+curl -X POST https://agent-deployer.<your-subdomain>.workers.dev/deploy \
+  -H "X-Deploy-Secret: <DEPLOY_SHARED_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo": "your-username/corner-bakery",
+    "create_repo": true,
+    "files": [{ "path": "index.html", "content": "<h1>Corner Bakery</h1>" }],
+    "readme": { "path": "README.md", "content": "# Corner Bakery" }
+  }'
+```
+
+| Field | Notes |
+|---|---|
+| `repo` | `owner/name`, or just `name` if `GITHUB_DEFAULT_OWNER` is set |
+| `files` | Up to 20 `{ path, content }` items. Paths use letters, digits, `.`, `_`, `-` and `/`, with no `..`. Each file up to 300,000 characters |
+| `readme` | Optional `{ path, content }`, written last |
+| `create_repo` | Create the repo (private) if it doesn't exist |
+| `message` | Optional commit message for the files |
+
+The response has `success`, `repoUrl`, `repoCreated`, `filesWritten`, `filesSkipped` (only when something didn't land), `readme`, `subrequestsUsed` and `errors`.
+
 ## Techniques worth knowing about
 
 A few implementation details are more interesting than "it uses tools," and are easy to miss reading the source cold.
@@ -767,9 +837,12 @@ A few implementation details are more interesting than "it uses tools," and are 
 
 **A second model reviews the first.** After the work is done, a small separate model compares the answer to the goal and either accepts it or asks for one revision. If the revision comes back as another empty announcement, the run fails instead of delivering it.
 
+**The deployer stops on purpose.** Instead of being killed by Cloudflare halfway through a file list, the deployer counts each GitHub call, reserves room for its own report, and returns a list of exactly which files landed and which didn't. Failed writes go in the same list as budget-skipped ones, since the fix is identical: send those paths again.
+
 ## Limitations
 
 - A large multi-file build can exceed the free-plan subrequest budget. It fails with a clear message rather than silently.
+- The deployer commits one file at a time, so a big deploy leaves one commit per file in the repo's history.
 - Free-tier model providers are rate-limited and occasionally unavailable. Fallback chains reduce but do not remove the impact.
 - The code sandbox has no third-party packages. Code importing `pandas`, `numpy` and similar is skipped during verification rather than reported as broken.
 - Screenshots use a data-URL method with a practical page-size limit of roughly 6 KB encoded.
