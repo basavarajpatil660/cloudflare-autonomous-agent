@@ -224,7 +224,7 @@ This is how the project runs in production. Each worker lives in its own GitHub 
 Deploy `agent-deployer` first and note its URL. `agent-router` needs it as `DEPLOYER_WORKER_URL`. Open that URL in a browser to check it's alive. You should see:
 
 ```json
-{ "status": "ok", "worker": "agent-deployer", "version": "1.4", "usage": "POST /deploy with X-Deploy-Secret header" }
+{ "status": "ok", "worker": "agent-deployer", "version": "1.5", "usage": "POST /deploy with X-Deploy-Secret header" }
 ```
 
 From then on, every change is edit, commit, push.
@@ -813,7 +813,7 @@ curl -X POST https://agent-deployer.<your-subdomain>.workers.dev/deploy \
 
 | Field | Notes |
 |---|---|
-| `repo` | `owner/name`, or just `name` if `GITHUB_DEFAULT_OWNER` is set |
+| `repo` | `owner/name`, or just `name` if `GITHUB_DEFAULT_OWNER` is set. New repos are always created under the token's own account. If you name a different owner, the deploy stops and tells you which repo GitHub actually created |
 | `files` | Up to 20 `{ path, content }` items. Paths use letters, digits, `.`, `_`, `-` and `/`, with no `..`. Each file up to 300,000 characters |
 | `readme` | Optional `{ path, content }`, written last |
 | `create_repo` | Create the repo (private) if it doesn't exist |
