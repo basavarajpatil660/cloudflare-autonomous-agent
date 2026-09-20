@@ -1,8 +1,32 @@
-// deployer-worker.js — v1.4
+// deployer-worker.js — v1.5
 // A small, single-purpose Cloudflare Worker that exists ONLY to push a
 // finished multi-file project (+ optional README) to a GitHub repo in one
 // batched request, using its own separate Cloudflare Free-plan subrequest
 // budget (50/invocation, same limit as the main agent-router worker).
+//
+// v1.5 changes (robustness pass):
+//   1. A timed-out or failed GitHub call no longer crashes the request.
+//      budgetedFetch aborts after GITHUB_TIMEOUT_MS by THROWING, and
+//      nothing caught it: the Worker died with a bare 500 and the caller
+//      lost the list of files that HAD landed. Every GitHub call site now
+//      returns a normal { ok: false, error }, so the failed file goes into
+//      filesSkipped like any other failure, and a last-resort catch in
+//      fetch() always answers with JSON.
+//   2. Repo names are validated as a strict "owner/name" before any call.
+//      A model-supplied name with a space or an extra slash used to reach
+//      GitHub, which normalises names on create, so the repo got created
+//      under a slightly different name than the one the writes targeted
+//      (and every write then 404'd).
+//   3. New repos are always created under the token's own account. If the
+//      caller named a different owner (a hallucinated "username/..." is
+//      the usual cause) the old code created a stray repo under the real
+//      account and then 404'd every write to the wrong one. The create
+//      response's full_name is now checked; on a mismatch the deploy stops
+//      and names the repo to retry with.
+//   4. Request validation: a null body, a null entry in "files", a
+//      non-string README body or a non-string commit message used to throw
+//      a TypeError (bare 500). They are now clean 400s.
+//   5. isUnsafePath also rejects "//" inside a path.
 //
 // v1.4 changes (subrequest-limit audit, done across BOTH workers):
 //   1. REAL subrequest accounting instead of a static file cap. Verified
@@ -149,8 +173,26 @@ function isUnsafePath(path) {
   if (typeof path !== "string" || !path.trim()) return true;
   if (/(^|\/)\.\.(\/|$)/.test(path)) return true;
   if (path.startsWith("/") || path.endsWith("/")) return true;
+  if (path.includes("//")) return true;
   if (!/^[a-zA-Z0-9._\-\/]+$/.test(path)) return true;
   return false;
+}
+
+// v1.5: strict "owner/name". Owners are letters, digits, "-" and "_"; repo
+// names also allow ".". Spaces, extra slashes and query characters never
+// reach a URL.
+function isValidRepoName(repo) {
+  if (typeof repo !== "string") return false;
+  if (!/^[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(repo)) return false;
+  const name = repo.split("/")[1];
+  return name !== "." && name !== "..";
+}
+
+// v1.5: turns a thrown fetch error (timeout abort, network failure) into
+// text safe to put in a JSON response.
+function describeFetchError(e) {
+  if (e && e.name === "AbortError") return `no response from GitHub within ${GITHUB_TIMEOUT_MS / 1000}s`;
+  return String((e && e.message) || e);
 }
 
 function sleep(ms) {
@@ -170,24 +212,36 @@ function timingSafeEqualStr(a, b) {
 }
 
 async function ensureRepoExists(repo, createIfMissing, env, budget) {
-  const headers = ghHeaders(env);
-  const checkRes = await budgetedFetch(budget, `https://api.github.com/repos/${repo}`, { headers });
-  if (checkRes.status === 404) {
-    if (!createIfMissing) return { ok: false, error: `Repo "${repo}" does not exist and create_repo was not set to true.` };
-    const [, repoName] = repo.split("/");
-    const createRes = await budgetedFetch(budget, "https://api.github.com/user/repos", {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: repoName, private: true, auto_init: true })
-    });
-    if (!createRes.ok) {
-      const errText = await createRes.text().catch(() => "");
-      return { ok: false, error: `Error creating repo "${repo}": ${createRes.status} ${errText.slice(0, 200)}` };
+  try {
+    const headers = ghHeaders(env);
+    const checkRes = await budgetedFetch(budget, `https://api.github.com/repos/${repo}`, { headers });
+    if (checkRes.status === 404) {
+      if (!createIfMissing) return { ok: false, error: `Repo "${repo}" does not exist and create_repo was not set to true.` };
+      const [, repoName] = repo.split("/");
+      const createRes = await budgetedFetch(budget, "https://api.github.com/user/repos", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: repoName, private: true, auto_init: true })
+      });
+      if (!createRes.ok) {
+        const errText = await createRes.text().catch(() => "");
+        return { ok: false, error: `Error creating repo "${repo}": ${createRes.status} ${errText.slice(0, 200)}` };
+      }
+      // v1.5: POST /user/repos always creates under the token's own
+      // account, whatever owner the caller named. If GitHub put it
+      // somewhere else, stop now instead of 404-ing every write.
+      const createdData = await createRes.json().catch(() => null);
+      const actual = createdData && createdData.full_name;
+      if (actual && String(actual).toLowerCase() !== repo.toLowerCase()) {
+        return { ok: false, error: `Asked to create "${repo}", but new repos are always created under the account that owns GITHUB_TOKEN, so GitHub created "${actual}" instead. Nothing was written. Re-call deploy with repo "${actual}" (it exists now) to push the files there.` };
+      }
+      return { ok: true, created: true };
     }
-    return { ok: true, created: true };
+    if (!checkRes.ok) return { ok: false, error: `Error checking repo "${repo}": ${checkRes.status}` };
+    return { ok: true, created: false };
+  } catch (e) {
+    return { ok: false, error: `Could not reach GitHub while checking or creating "${repo}": ${describeFetchError(e)}` };
   }
-  if (!checkRes.ok) return { ok: false, error: `Error checking repo "${repo}": ${checkRes.status}` };
-  return { ok: true, created: false };
 }
 
 // skipShaCheck: true only for the main file loop on a freshly created repo,
@@ -198,7 +252,18 @@ async function ensureRepoExists(repo, createIfMissing, env, budget) {
 // the 422 sha-race on the README. Every retry re-checks the SHA, so a
 // retry costs 2 subrequests, not 1 — which is exactly why the budget is
 // now counted rather than assumed.
+// v1.5: network failures and the GITHUB_TIMEOUT_MS abort throw. Catch them
+// here so one bad call becomes a normal failed-file result instead of
+// killing the whole request and losing the report of what already landed.
 async function writeOneFile(repo, path, content, message, env, skipShaCheck, budget, attempt = 0) {
+  try {
+    return await attemptWrite(repo, path, content, message, env, skipShaCheck, budget, attempt);
+  } catch (e) {
+    return { ok: false, error: `Error writing ${path}: ${describeFetchError(e)}` };
+  }
+}
+
+async function attemptWrite(repo, path, content, message, env, skipShaCheck, budget, attempt = 0) {
   const headers = ghHeaders(env);
   let sha;
   if (!skipShaCheck) {
@@ -256,15 +321,20 @@ async function handleDeploy(request, env) {
   } catch {
     return json({ error: "Invalid JSON body." }, 400);
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Request body must be a JSON object." }, 400);
   let { repo, files, readme, create_repo: createRepo, message } = body;
+  if (typeof message !== "string") message = void 0;
   if (!repo || typeof repo !== "string") return json({ error: '"repo" (string, "owner/name" or just "name") is required.' }, 400);
+  repo = repo.trim();
   if (!Array.isArray(files) || !files.length) return json({ error: '"files" (non-empty array of {path, content}) is required.' }, 400);
   if (files.length > MAX_FILES_PER_DEPLOY) return json({ error: `Too many files (${files.length}) — max ${MAX_FILES_PER_DEPLOY} per deploy. Split the project across two deploy calls.` }, 400);
   for (const f of files) {
+    if (!f || typeof f !== "object") return json({ error: 'Every entry in "files" must be an object with "path" and "content".' }, 400);
     if (isUnsafePath(f.path)) return json({ error: `Unsafe or missing path: "${f.path}"` }, 400);
     if (typeof f.content !== "string") return json({ error: `File "${f.path}" is missing string content.` }, 400);
     if (f.content.length > MAX_FILE_SIZE) return json({ error: `File "${f.path}" is too large (${f.content.length} chars, max ${MAX_FILE_SIZE}).` }, 400);
   }
+  if (readme && (typeof readme !== "object" || (readme.content !== void 0 && typeof readme.content !== "string"))) return json({ error: '"readme" must be { path, content } with string content.' }, 400);
   if (readme && isUnsafePath(readme.path || "README.md")) return json({ error: "Unsafe README path." }, 400);
 
   repo = fillOwner(repo, env);
@@ -276,6 +346,9 @@ async function handleDeploy(request, env) {
   // instead of walking into a guaranteed-to-fail write loop.
   if (!repo.includes("/") || repo.startsWith("/") || repo.endsWith("/")) {
     return json({ error: `Resolved repo "${repo}" is not a valid "owner/name" — the caller sent a bare repo name and GITHUB_DEFAULT_OWNER is not configured on this worker. Set GITHUB_DEFAULT_OWNER as a variable in this worker's wrangler.jsonc, or always pass a fully-qualified "owner/repo" string.` }, 400);
+  }
+  if (!isValidRepoName(repo)) {
+    return json({ error: `"${repo}" is not a valid "owner/name". Owners use letters, digits, "-" and "_"; repo names also allow ".". No spaces or extra slashes.` }, 400);
   }
 
   const budget = createBudget(env);
@@ -361,10 +434,16 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/deploy") {
-      return handleDeploy(request, env);
+      try {
+        return await handleDeploy(request, env);
+      } catch (e) {
+        // Last resort. Expected failures are handled where they happen, so
+        // reaching this means a bug. Still answer with JSON, not a bare 500.
+        return json({ success: false, error: `Unexpected deployer error: ${String((e && e.message) || e)}` }, 500);
+      }
     }
     if (request.method === "GET" && url.pathname === "/") {
-      return json({ status: "ok", worker: "agent-deployer", version: "1.4", usage: "POST /deploy with X-Deploy-Secret header" });
+      return json({ status: "ok", worker: "agent-deployer", version: "1.5", usage: "POST /deploy with X-Deploy-Secret header" });
     }
     return json({ error: "Not found. POST /deploy is the only endpoint." }, 404);
   }
